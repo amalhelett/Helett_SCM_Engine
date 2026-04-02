@@ -619,7 +619,7 @@ function SKUModal({ item, params, onClose }) {
 }
 
 // ─── PAGE: IMPORT ─────────────────────────────────────────────────────────────
-function ImportPage({ fileStatus, onFile, onGS, onLaunch, hasData, fcAutoStatus }) {
+function ImportPage({ fileStatus, onFile, onGS, onLaunch, hasData, fcAutoStatus, parseCount, parseErr, raw }) {
   const [gsUrl,  setGsUrl]  = useState(`https://docs.google.com/spreadsheets/d/${FC_SHEET_ID}/edit`);
   const [gsTab,  setGsTab]  = useState("FBA Inventory");
   const [gsType, setGsType] = useState("fba");
@@ -714,12 +714,47 @@ function ImportPage({ fileStatus, onFile, onGS, onLaunch, hasData, fcAutoStatus 
         <UpCard title="Fulfilled Shipments" sub="Reports → Fulfillment → Amazon Fulfilled Shipments" icon="🚚" type="shipments" accent={T.blue} />
       </div>
 
-      {hasData && (
-        <button onClick={onLaunch} style={{ width: "100%", padding: 13, borderRadius: 8, border: "none", cursor: "pointer",
-          background: `linear-gradient(135deg, ${T.accent}, #d4891e)`, color: "#000", fontWeight: 700, fontSize: 13, letterSpacing: 1 }}>
-          LAUNCH DASHBOARD →
-        </button>
-      )}
+      {/* Debug row counts */}
+      <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: "12px 16px", marginBottom: 16 }}>
+        <div style={{ color: T.dim, fontSize: 9, letterSpacing: 3, marginBottom: 10 }}>DEBUG — PARSED ROW COUNTS</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          {[
+            { key: "fba",       label: "FBA Inventory" },
+            { key: "ledger",    label: "Inventory Ledger" },
+            { key: "shipments", label: "Fulfilled Shipments" },
+          ].map(({ key, label }) => (
+            <div key={key} style={{ background: T.surf, borderRadius: 6, padding: "10px 14px" }}>
+              <div style={{ color: T.dim, fontSize: 9, letterSpacing: 1, marginBottom: 4 }}>{label}</div>
+              <div style={{ fontFamily: "'Space Mono',monospace", fontSize: 18, fontWeight: 700,
+                color: fileStatus[key] === "loaded" ? T.green : fileStatus[key] === "error" ? T.red : T.dim }}>
+                {fileStatus[key] === "loaded" ? `${parseCount[key]} rows` : fileStatus[key] === "error" ? "ERROR" : fileStatus[key] === "loading" ? "loading…" : "—"}
+              </div>
+              {fileStatus[key] === "error" && parseErr[key] && (
+                <div style={{ color: T.red, fontSize: 9, marginTop: 4, lineHeight: 1.4 }}>{parseErr[key]}</div>
+              )}
+            </div>
+          ))}
+        </div>
+        {!hasData && fileStatus.fba === "loaded" && (
+          <div style={{ marginTop: 10, color: T.red, fontSize: 11 }}>
+            ⚠ FBA file shows LOADED but parsed 0 rows — the sheet may not be returning CSV. Make sure the tab name is exact and the sheet is shared publicly.
+          </div>
+        )}
+      </div>
+
+      <button
+        onClick={onLaunch}
+        disabled={!hasData}
+        style={{
+          width: "100%", padding: 13, borderRadius: 8, border: "none",
+          cursor: hasData ? "pointer" : "not-allowed",
+          background: hasData ? `linear-gradient(135deg, ${T.accent}, #d4891e)` : T.border,
+          color: hasData ? "#000" : T.dim,
+          fontWeight: 700, fontSize: 13, letterSpacing: 1,
+          transition: "all .2s",
+        }}>
+        {hasData ? `LAUNCH DASHBOARD → (${raw.fba.length} SKUs loaded)` : "LAUNCH DASHBOARD → (load FBA Inventory first)"}
+      </button>
     </div>
   );
 }
@@ -1214,6 +1249,8 @@ export default function App() {
   const [fcSell,   setFcSell]   = useState({});
   const [fcUnsell, setFcUnsell] = useState({});
   const [fcAutoStatus, setFcAutoStatus] = useState("idle");
+  const [parseCount, setParseCount] = useState({ fba: 0, ledger: 0, shipments: 0 });
+  const [parseErr,   setParseErr]   = useState({ fba: "", ledger: "", shipments: "" });
 
   // Auto-fetch FC sheet on mount
   useEffect(() => {
@@ -1244,24 +1281,34 @@ export default function App() {
     file.text().then(text => {
       try {
         let data;
-        if (type === "fba")       data = parseFBA(text);
+        if (type === "fba")            data = parseFBA(text);
         else if (type === "ledger")    data = parseLedger(text);
         else if (type === "shipments") data = parseShipments(text);
+        if (!data || data.length === 0) throw new Error("0 rows parsed — check file format");
         setRaw(r => ({ ...r, [type]: data }));
         setFileStatus(s => ({ ...s, [type]: "loaded" }));
-      } catch { setFileStatus(s => ({ ...s, [type]: "error" })); }
+        setParseCount(c => ({ ...c, [type]: data.length }));
+      } catch (e) {
+        setFileStatus(s => ({ ...s, [type]: "error" }));
+        setParseErr(c => ({ ...c, [type]: e.message }));
+      }
     });
   }
 
   function handleGS(type, text) {
     try {
       let data;
-      if (type === "fba")       data = parseFBA(text);
+      if (type === "fba")            data = parseFBA(text);
       else if (type === "ledger")    data = parseLedger(text);
       else if (type === "shipments") data = parseShipments(text);
+      if (!data || data.length === 0) throw new Error("0 rows parsed — check sheet name, tab name, and that the sheet is public");
       setRaw(r => ({ ...r, [type]: data }));
       setFileStatus(s => ({ ...s, [type]: "loaded" }));
-    } catch { setFileStatus(s => ({ ...s, [type]: "error" })); }
+      setParseCount(c => ({ ...c, [type]: data.length }));
+    } catch (e) {
+      setFileStatus(s => ({ ...s, [type]: "error" }));
+      setParseErr(c => ({ ...c, [type]: e.message }));
+    }
   }
 
   const hasData = raw.fba.length > 0;
@@ -1345,7 +1392,8 @@ export default function App() {
       <div style={{ padding: 24, maxWidth: 1400, margin: "0 auto" }}>
         {page === "import" && (
           <ImportPage fileStatus={fileStatus} onFile={handleFile} onGS={handleGS}
-            onLaunch={() => setPage("dashboard")} hasData={hasData} fcAutoStatus={fcAutoStatus} />
+            onLaunch={() => setPage("dashboard")} hasData={hasData} fcAutoStatus={fcAutoStatus}
+            parseCount={parseCount} parseErr={parseErr} raw={raw} />
         )}
         {page === "dashboard" && hasData && (
           <DashboardPage inv={inventory} params={params} onSelect={a => setSelAsin(a)} />
